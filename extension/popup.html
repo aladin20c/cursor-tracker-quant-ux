@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { width: 300px; padding: 15px; font-family: sans-serif; }
+        .status-container { display: flex; align-items: center; margin-bottom: 15px; }
+        .dot { height: 12px; width: 12px; border-radius: 50%; background-color: #ccc; margin-right: 8px; }
+        .dot.green { background-color: #2ecc71; }
+        .dot.red { background-color: #e74c3c; }
+        
+        input { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; }
+        .controls { display: grid; gap: 5px; grid-template-columns: 1fr 1fr; }
+        button { padding: 8px; cursor: pointer; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="status-container">
+        <div id="statusDot" class="dot"></div>
+        <span id="statusText">Checking...</span>
+    </div>
+
+    <input type="text" id="sessionName" placeholder="Enter Session Name...">
+
+    <div class="controls">
+        <button id="startBtn">Start</button>
+        <button id="pauseBtn" class="hidden">Pause</button>
+        <button id="resumeBtn" class="hidden">Resume</button>
+        <button id="endBtn" class="hidden">End Session</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

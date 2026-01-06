@@ -1,0 +1,131 @@
+############################
+# OS / System junk
+############################
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+############################
+# Editor / IDE junk
+############################
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, IntelliJ, WebStorm)
+.idea/
+*.iml
+
+# Vim / Emacs
+*.swp
+*.swo
+*.swn
+*.bak
+*.tmp
+*~
+.#*
+
+############################
+# Python backend
+############################
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Packaging
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs
+*.log
+
+############################
+# Environment / secrets
+############################
+
+.env
+.env.*
+!.env.example
+
+############################
+# Frontend / Chrome extension
+############################
+
+# Node / npm / yarn
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+build/
+out/
+
+# Chrome extension junk
+*.crx
+*.pem
+
+# Source maps
+*.map
+
+############################
+# Tooling
+############################
+
+# ESLint / Prettier
+.eslintcache
+
+# Parcel / Vite / Webpack
+.cache/
+.parcel-cache/
+
+############################
+# Misc
+############################
+
+# OS generated files anywhere
+**/.DS_Store
+**/Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp

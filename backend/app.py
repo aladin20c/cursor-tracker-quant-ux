@@ -94,7 +94,9 @@ def record_page():
     session_name = data.get("session_name")
     url = data.get("url")
     window_size = data.get("window_size")
-    timestamp = time.time()
+    
+    timestamp = data.get("timestamp")
+    if not timestamp: timestamp = int(time.time() * 1000)
     
     # Handle empty new tabs
     if not url or (isinstance(url, str) and url.lower() in {"null", "undefined"}):

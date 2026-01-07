@@ -75,6 +75,7 @@ function updateUI(state) {
         els.end.classList.remove('hidden');
     } else if (state.sessionStatus === "PAUSED") {
         els.resume.classList.remove('hidden');
+        els.resume.disabled = !state.isConnected
         els.end.classList.remove('hidden');
     }
 }

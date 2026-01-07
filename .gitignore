@@ -129,3 +129,6 @@ out/
 *.tmp
 *.temp
 *.swp
+
+
+./backend/data/*

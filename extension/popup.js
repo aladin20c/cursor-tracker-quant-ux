@@ -1,3 +1,6 @@
+/************************************************/
+/*****************Ui*elements********************/
+/************************************************/
 const els = {
     dot: document.getElementById('statusDot'),
     text: document.getElementById('statusText'),
@@ -8,14 +11,44 @@ const els = {
     end: document.getElementById('endBtn')
 };
 
-// Local variable to track if user is currently typing
+function hideAllButtons() {
+    [els.start, els.pause, els.resume, els.end].forEach(b => b.classList.add('hidden'));
+}
+
 let isUserTyping = false;
 
-function updateUI(state) {
-    const { isConnected, sessionStatus, sessionName } = state;
 
-    // 1. Connection UI
-    if (isConnected) {
+/************************************************/
+/************Sync Logic****************/
+/************************************************/
+
+// 1. Ask Background for current status immediately
+chrome.runtime.sendMessage({ action: "GET_STATUS" }, (state) => {
+    if(state) updateUI(state);
+});
+
+chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === "STATUS_UPDATE") {
+        updateUI(msg.state);
+    }
+});
+
+function sendUpdate(status) {
+    chrome.runtime.sendMessage({ 
+        action: "UPDATE_SESSION", 
+        payload: { status: status, name: els.input.value } 
+    }, (response) => {
+        if(response && response.newState) updateUI(response.newState);
+    });
+}
+
+
+/************************************************/
+/*****************UI Updates*********************/
+/************************************************/
+function updateUI(state) {
+    // Connection UI
+    if (state.isConnected) {
         els.dot.className = "dot green";
         els.text.textContent = "Connected";
     } else {
@@ -23,95 +56,46 @@ function updateUI(state) {
         els.text.textContent = "Disconnected";
     }
 
-    // 2. Input Field Management
-    // Only overwrite value if user is NOT typing, or if session is locked (RUNNING/PAUSED)
-    if (!isUserTyping || sessionStatus !== "IDLE") {
-        els.input.value = sessionName || "";
+    // Input Management
+    if (!isUserTyping || state.sessionStatus !== "IDLE") {
+        els.input.value = state.sessionName || "";
     }
+    els.input.disabled = (state.sessionStatus !== "IDLE");
 
-    // Lock input if session is active
-    els.input.disabled = (sessionStatus !== "IDLE");
-
-    // 3. Button Visibility
-    hideAllButtons();
+    // Buttons
+    [els.start, els.pause, els.resume, els.end].forEach(b => b.classList.add('hidden'));
     
-    // Check local input value for validation, not just state
-    const currentName = els.input.value.trim();
-    const canStart = isConnected && currentName.length > 0;
+    const hasName = els.input.value.trim().length > 0;
 
-    if (sessionStatus === "IDLE") {
+    if (state.sessionStatus === "IDLE") {
         els.start.classList.remove('hidden');
-        els.start.disabled = !canStart; 
-    } else if (sessionStatus === "RUNNING") {
+        els.start.disabled = !(state.isConnected && hasName); 
+    } else if (state.sessionStatus === "RUNNING") {
         els.pause.classList.remove('hidden');
         els.end.classList.remove('hidden');
-    } else if (sessionStatus === "PAUSED") {
+    } else if (state.sessionStatus === "PAUSED") {
         els.resume.classList.remove('hidden');
         els.end.classList.remove('hidden');
     }
 }
 
-function hideAllButtons() {
-    [els.start, els.pause, els.resume, els.end].forEach(b => b.classList.add('hidden'));
-}
 
 
 
-// --- Communication ---
-
-function syncState() {
-    chrome.runtime.sendMessage({ action: "GET_STATUS" }, (state) => {
-        if(state) updateUI(state);
-    });
-}
-
-function sendUpdate(status) {
-    chrome.runtime.sendMessage({ 
-        action: "UPDATE_SESSION", 
-        payload: { status: status, name: els.input.value } 
-    }, (response) => {
-        updateUI(response.newState);
-    });
-}
-
-// --- Listeners ---
-
-// Fix: Don't sync entire state on input, just validate button locally
-els.input.addEventListener('input', () => {
-    isUserTyping = true;
-    // We just manually trigger a UI refresh to check button validity
-    // We fake a state object to avoid fetching from background while typing
-    chrome.runtime.sendMessage({ action: "GET_STATUS" }, (state) => {
-         // Keep the typed name in the UI, don't let state overwrite it yet
-         updateUI({ ...state, sessionName: els.input.value });
-    });
-});
+/************************************************/
+/*****************Listeners**********************/
+/************************************************/
+els.input.addEventListener('input', () => { isUserTyping = true; });
 
 els.input.addEventListener('blur', () => {
-    isUserTyping = false;
-    // When user leaves the field, save the name to background
+    isUserTyping = false; 
     sendUpdate("IDLE"); 
 });
 
 els.start.addEventListener('click', () => sendUpdate("RUNNING"));
 els.pause.addEventListener('click', () => sendUpdate("PAUSED"));
 els.resume.addEventListener('click', () => sendUpdate("RUNNING"));
-els.end.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ 
-        action: "UPDATE_SESSION", 
-        payload: { status: "IDLE", name: "" } 
-    }, (response) => {
-        isUserTyping = false; // Reset typing flag
-        updateUI(response.newState);
-    });
-});
+els.end.addEventListener('click', () => { sendUpdate("IDLE");});
 
-// Initial Load
-syncState();
 
-// Listen for background changes (heartbeat)
-chrome.storage.onChanged.addListener((changes) => {
-    if (changes.appState) {
-        updateUI(changes.appState.newValue);
-    }
-});
+

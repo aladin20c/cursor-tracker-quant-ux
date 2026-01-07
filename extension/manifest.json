@@ -2,13 +2,15 @@
   "manifest_version": 3,
   "name": "UX Quant Recorder",
   "version": "1.0",
-  "permissions": ["storage"],
-  "host_permissions": [
-    "http://localhost:8080/*"
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [ "http://localhost:8080/*" ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
   ],
-  "background": {
-    "service_worker": "background.js"
-  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "UX Recorder"

@@ -42,21 +42,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     else if (request.action === "UPDATE_SESSION") {
         handleSessionUpdate(request, sendResponse);        
         return true; 
-    } else if (request.action === "LOG_CLICK") {
-        console.log("LOG_CLICK detected")
-        // Only send if we are recording and have a session name
+    } else if (request.action === "LOG_EVENT") {
+        // Only log if session is RUNNING
         if (state.sessionStatus === "RUNNING" && state.serverSessionName) {
+            
             fetch(`${SERVER_URL}/record-event`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     session_name: state.serverSessionName,
-                    x: request.payload.x,
-                    y: request.payload.y,
-                    timestamp: request.payload.timestamp,
-                    window_size: request.payload.window_size
+                    ...request.payload 
                 })
-            }).catch(err => console.error(err));
+            }).catch(err => console.log("Drop:", err));
         }
     }
 });

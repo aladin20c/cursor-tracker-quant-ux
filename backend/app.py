@@ -126,13 +126,52 @@ def record_page():
 @app.route('/record-event', methods=['POST'])
 def record_event():
     data = request.json or {}
+    session_name = data.get("session_name")
     
-    # 1. Print to console (This is working!)
-    print(f"CLICK RECEIVED: X={data.get('x')}, Y={data.get('y')}")
+    if not session_name: return '', 204
 
-    # 2. (Optional) Save to CSV logic goes here...
-    
-    # 3. RETURN STATEMENT (This is what you are missing)
+    folder_path = os.path.join(DATA_DIR, session_name)
+    if os.path.exists(folder_path):
+        try:
+            file_path = os.path.join(folder_path, "events.csv")
+            
+            # Check if we need to write headers
+            write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
+            
+            with open(file_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                
+                # Write Header if new file
+                if write_header:
+                    writer.writerow([
+                        "timestamp", "type", "url", 
+                        "tagName", "id", "className", "outerHTML",
+                        "viewportX", "viewportY", "pageX", "pageY",
+                        "windowWidth", "windowHeight"
+                    ])
+
+                # Write The Full Data Row
+                writer.writerow([
+                    data.get("timestamp"),
+                    data.get("type"),
+                    data.get("url"),
+                    data.get("tagName"),
+                    data.get("id"),
+                    data.get("className"),
+                    data.get("outerHTML"), # Python handles quotes/newlines automatically
+                    data.get("viewportX"),
+                    data.get("viewportY"),
+                    data.get("pageX"),
+                    data.get("pageY"),
+                    data.get("windowWidth"),
+                    data.get("windowHeight")
+                ])
+                
+            print(f" > {data.get('type').upper()} recorded on {data.get('tagName')}")
+
+        except Exception as e:
+            print(f"Error: {e}")
+
     return '', 204
 
 

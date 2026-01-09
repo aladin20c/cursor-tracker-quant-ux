@@ -61,6 +61,11 @@ function recordEvent(element, event, type) {
     if (safeHTML.length > 500) safeHTML = safeHTML.substring(0, 500) + "...";
     if (element.tagName === 'BODY' || element.tagName === 'HTML') safeHTML = "BODY_CONTAINER";
 
+
+    const rect = element.getBoundingClientRect();
+    const elementRelativeX = viewportX - rect.left;
+    const elementRelativeY = viewportY - rect.top;
+
     // 3. CONSTRUCT YOUR EXACT DATA POINT
     const dataPoint = {
         type: type, // 'click' or 'hover'
@@ -75,6 +80,14 @@ function recordEvent(element, event, type) {
         innerText: element.innerText ? element.innerText.substring(0, 50) : null,
         outerHTML: safeHTML,
 
+        // --- Element-Relative Coordinates (NEW) ---
+        element_x: Math.round(elementRelativeX),
+        element_y: Math.round(elementRelativeY),
+        element_width: Math.round(rect.width),
+        element_height: Math.round(rect.height),
+        element_top: Math.round(rect.top),
+        element_left: Math.round(rect.left),
+
         // --- Coordinates ---
         x_viewport: Math.round(viewportX),
         y_viewport: Math.round(viewportY),
@@ -88,6 +101,7 @@ function recordEvent(element, event, type) {
         viewportH: window.innerHeight,
         docHeight: document.documentElement.scrollHeight,
         docWidth: document.documentElement.scrollWidth
+    
     };
 
     // 4. Send to Background

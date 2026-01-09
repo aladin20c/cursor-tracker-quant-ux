@@ -123,6 +123,7 @@ def record_page():
 ###########################################################
 
 
+
 @app.route('/record-event', methods=['POST'])
 def record_event():
     data = request.json or {}
@@ -135,39 +136,49 @@ def record_event():
         try:
             file_path = os.path.join(folder_path, "events.csv")
             
-            # Check if we need to write headers
+            # Check if we need headers
             write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
             
             with open(file_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 
-                # Write Header if new file
+                # 1. WRITE HEADERS (Exact match to your object keys)
                 if write_header:
                     writer.writerow([
                         "timestamp", "type", "url", 
-                        "tagName", "id", "className", "outerHTML",
-                        "viewportX", "viewportY", "pageX", "pageY",
-                        "windowWidth", "windowHeight"
+                        "selector", "tagName", "id", "className", "innerText", "outerHTML",
+                        "x_viewport", "y_viewport", "x_page", "y_page",
+                        "scrollX", "scrollY", "viewportW", "viewportH",
+                        "docWidth", "docHeight"
                     ])
 
-                # Write The Full Data Row
+                # 2. WRITE ROW
                 writer.writerow([
                     data.get("timestamp"),
                     data.get("type"),
                     data.get("url"),
+                    # Element Identity
+                    data.get("selector"),
                     data.get("tagName"),
                     data.get("id"),
                     data.get("className"),
-                    data.get("outerHTML"), # Python handles quotes/newlines automatically
-                    data.get("viewportX"),
-                    data.get("viewportY"),
-                    data.get("pageX"),
-                    data.get("pageY"),
-                    data.get("windowWidth"),
-                    data.get("windowHeight")
+                    data.get("innerText").replace("\n", " ").replace("\r", " "),
+                    data.get("outerHTML").replace("\n", " ").replace("\r", " "),
+                    # Coordinates
+                    data.get("x_viewport"),
+                    data.get("y_viewport"),
+                    data.get("x_page"),
+                    data.get("y_page"),
+                    # Context
+                    data.get("scrollX"),
+                    data.get("scrollY"),
+                    data.get("viewportW"),
+                    data.get("viewportH"),
+                    data.get("docWidth"),
+                    data.get("docHeight")
                 ])
                 
-            print(f" > {data.get('type').upper()} recorded on {data.get('tagName')}")
+            print(f" > {data.get('type').upper()} saved: {data.get('tagName')} ({data.get('x_viewport')},{data.get('y_viewport')})")
 
         except Exception as e:
             print(f"Error: {e}")

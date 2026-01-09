@@ -118,6 +118,22 @@ def record_page():
 
 
 
+###########################################################
+###########################################################
+###########################################################
+
+
+@app.route('/record-event', methods=['POST'])
+def record_event():
+    data = request.json or {}
+    
+    # 1. Print to console (This is working!)
+    print(f"CLICK RECEIVED: X={data.get('x')}, Y={data.get('y')}")
+
+    # 2. (Optional) Save to CSV logic goes here...
+    
+    # 3. RETURN STATEMENT (This is what you are missing)
+    return '', 204
 
 
 

@@ -55,8 +55,7 @@ def initialize_csvs(folder_path):
     # Event Log
     with open(os.path.join(folder_path, "events.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp", "event_type", "target", "x", "y", "metadata"])
-
+        writer.writerow(["timestamp","type", "url", "selector","tagName","id","className","innerText","outerHTML","x_viewport","y_viewport","x_page","y_page","scrollX","scrollY","viewportW","viewportH","docWidth","docHeight"])
 
 
 @app.route('/start-session', methods=['POST'])
@@ -186,8 +185,81 @@ def record_event():
     return '', 204
 
 
+###########################################################
+###########################################################
+###########################################################
 
-# Main
+@app.route('/record-events-batch', methods=['POST'])
+def record_events_batch():
+    """
+    Receive and process multiple events in a single request
+    """
+    data = request.json or {}
+    session_name = data.get("session_name")
+    events = data.get("events", [])
+    
+    if not session_name or not events:
+        return jsonify({"status": "error", "message": "Missing required fields"}), 400
+    
+    folder_path = os.path.join(DATA_DIR, session_name)
+    if not os.path.exists(folder_path):
+        return jsonify({"error": "Session not found"}), 404
+    
+    try:
+        file_path = os.path.join(folder_path, "events.csv")
+        
+        with open(file_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            
+            # Write all events in the batch
+            for event in events:
+                # Sanitize text fields
+                inner_text = event.get("innerText")
+                if inner_text:
+                    inner_text = inner_text.replace("\n", " ").replace("\r", " ")[:50]
+                
+                outer_html = event.get("outerHTML")
+                if outer_html:
+                    outer_html = outer_html.replace("\n", " ").replace("\r", " ")[:500]
+                
+                writer.writerow([
+                    event.get("timestamp"),
+                    event.get("type"),
+                    event.get("url"),
+                    # Element Identity
+                    event.get("selector"),
+                    event.get("tagName"),
+                    event.get("id"),
+                    event.get("className"),
+                    inner_text,
+                    outer_html,
+                    # Coordinates
+                    event.get("x_viewport"),
+                    event.get("y_viewport"),
+                    event.get("x_page"),
+                    event.get("y_page"),
+                    # Context
+                    event.get("scrollX"),
+                    event.get("scrollY"),
+                    event.get("viewportW"),
+                    event.get("viewportH"),
+                    event.get("docWidth"),
+                    event.get("docHeight")
+                ])
+        
+        print(f"Batch saved: {len(events)} events to {session_name}")
+        return jsonify({"status": "success", "count": len(events)}), 200
+        
+    except Exception as e:
+        print(f"Error processing batch: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+
+###########################################################
+#########################Main##############################
+###########################################################
+
 if __name__ == '__main__':
     if not os.path.exists(DATA_DIR):
         print("Creating data directory...")

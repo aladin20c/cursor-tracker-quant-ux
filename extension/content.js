@@ -1,13 +1,18 @@
 // ============================================================================
 // CONFIG & STATE
 // ============================================================================
+console.log("[Content.js] Trtacking Cursor Activities");
+
+const BATCH_SIZE = 10; // Send every 10 events
+const BATCH_TIMEOUT_MS = 3000; // Or send after 1 second
+let eventBatch = [];
+let batchTimeout = null;
+
 let hoverTimeout = null;
 let currentHoveredElement = null;
 let lastMouseMoveTime = 0;
 const HOVER_DELAY_MS = 500;
 const THROTTLE_MS = 100;
-
-console.log("✅ UX Recorder: FULL ATTRIBUTE MODE Loaded");
 
 // ============================================================================
 // LISTENERS
@@ -37,6 +42,7 @@ document.addEventListener('mousemove', (event) => {
     }
 });
 
+
 // ============================================================================
 // CORE LOGIC & DATA CONSTRUCTION
 // ============================================================================
@@ -59,7 +65,7 @@ function recordEvent(element, event, type) {
     const dataPoint = {
         type: type, // 'click' or 'hover'
         url: window.location.href,
-        timestamp: new Date().toISOString(),
+        timestamp: Date.now(),
 
         // --- Element Identity ---
         selector: getCssSelector(element),
@@ -85,9 +91,13 @@ function recordEvent(element, event, type) {
     };
 
     // 4. Send to Background
-    if (chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({ action: "LOG_EVENT", payload: dataPoint });
+    eventBatch.push(dataPoint);
+    if (eventBatch.length >= BATCH_SIZE) {
+        sendBatch();
+    } else if (!batchTimeout) {
+        batchTimeout = setTimeout(sendBatch, BATCH_TIMEOUT_MS);
     }
+    //if (chrome.runtime && chrome.runtime.sendMessage) {chrome.runtime.sendMessage({ action: "LOG_EVENT", payload: dataPoint });}
 
     // 5. Visual Feedback
     if (type === 'click') {
@@ -164,3 +174,44 @@ function getCssSelector(el) {
     
     return path.join(' > ');
 }
+
+
+// ============================================================================
+// BATCH SENDING FUNCTION
+// ============================================================================
+function sendBatch() {
+    if (batchTimeout) {
+        clearTimeout(batchTimeout);
+        batchTimeout = null;
+    }
+    if (eventBatch.length === 0) return;
+    // Send the current batch
+    const batchToSend = [...eventBatch];
+    eventBatch = []; // Clear the queue
+
+    if (chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({ 
+            action: "LOG_EVENT_BATCH", 
+            payload: batchToSend 
+        });
+    }
+}
+
+
+// ============================================================================
+// CLEANUP ON PAGE UNLOAD
+// ============================================================================
+window.addEventListener('beforeunload', () => {
+    sendBatch(); // Send any remaining events
+    clearTimeout(hoverTimeout);
+    clearTimeout(batchTimeout);
+});
+
+// ============================================================================
+// SEND BATCH PERIODICALLY (safety net)
+// ============================================================================
+setInterval(() => {
+    if (eventBatch.length > 0) {
+        sendBatch();
+    }
+}, 5000); // Every 5 seconds

@@ -7,6 +7,15 @@ let state = {
     serverSessionName: ""  // Actual folder name
 };
 
+// ============================================================================
+// BATCH PROCESSING IN BACKGROUND
+// ============================================================================
+let backgroundEventQueue = [];
+const BACKGROUND_BATCH_SIZE = 20; // Larger batches for background
+const BACKGROUND_BATCH_TIMEOUT = 2000; // 2 seconds
+let backgroundBatchTimeout = null;
+
+
 /************************************************/
 /*****************Heartbeat*backend**************/
 /************************************************/
@@ -55,6 +64,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 })
             }).catch(err => console.log("Drop:", err));
         }
+    } else if (request.action === "LOG_EVENT_BATCH") {
+        
+        // Queue events for batch processing
+        backgroundEventQueue.push(...request.payload);        
+        // Trigger batch send
+        if (backgroundEventQueue.length >= BACKGROUND_BATCH_SIZE) {
+            sendBackgroundBatch();
+        } else if (!backgroundBatchTimeout) {
+            backgroundBatchTimeout = setTimeout(sendBackgroundBatch, BACKGROUND_BATCH_TIMEOUT);
+        }
     }
 });
 
@@ -88,10 +107,7 @@ async function handleSessionUpdate(request, sendResponse) {
         } catch (error) {
             sendResponse({ success: false, error: "Backend error" });
         }
-    } 
-
-    // 2. ANY OTHER CHANGE (Pause, Resume, End)
-    else {
+    } else {
         // Update local state immediately
         if(status) state.sessionStatus = status;
         if(name !== undefined) state.sessionName = name;
@@ -106,6 +122,10 @@ async function handleSessionUpdate(request, sendResponse) {
             recordEvent("SESSION_RESUMED", state.serverSessionName)
             .then(() => logCurrentTab(state.serverSessionName))
             .then();
+        }
+
+        if (oldStatus === "RUNNING" && backgroundEventQueue.length > 0) {
+            await sendBackgroundBatch();
         }
 
         sendResponse({ success: true, newState: state });
@@ -175,3 +195,73 @@ function sendPageRecord(sessionName, url, width, height) {
         })
     }).catch(err => console.error(err));
 }
+
+
+
+
+
+
+// ============================================================================
+// BACKGROUND BATCH SENDING FUNCTION
+// ============================================================================
+async function sendBackgroundBatch() {
+    if (backgroundBatchTimeout) {
+        clearTimeout(backgroundBatchTimeout);
+        backgroundBatchTimeout = null;
+    }
+
+    if (backgroundEventQueue.length === 0) return;
+
+    // Filter only events from active session
+    const activeEvents = backgroundEventQueue.filter(event => 
+        state.sessionStatus === "RUNNING" && state.serverSessionName
+    );
+    
+    // Keep events not from active session for later
+    backgroundEventQueue = backgroundEventQueue.filter(event => 
+        !(state.sessionStatus === "RUNNING" && state.serverSessionName)
+    );
+
+    if (activeEvents.length === 0) return;
+
+    // Group by session name (in case multiple sessions somehow)
+    const eventsBySession = {};
+    activeEvents.forEach(event => {
+        if (!eventsBySession[state.serverSessionName]) {
+            eventsBySession[state.serverSessionName] = [];
+        }
+        eventsBySession[state.serverSessionName].push(event);
+    });
+
+    // Send each session's batch
+    for (const [sessionName, events] of Object.entries(eventsBySession)) {
+        if (events.length > 0) {
+            try {
+                await fetch(`${SERVER_URL}/record-events-batch`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_name: sessionName,
+                        events: events
+                    })
+                });
+                console.log(`Sent batch of ${events.length} events`);
+            } catch (err) {
+                console.log("Batch send failed, requeuing:", err);
+                // Requeue failed events
+                backgroundEventQueue.unshift(...events);
+            }
+        }
+    }
+}
+
+
+
+// ============================================================================
+// PERIODIC BATCH FLUSH (safety net)
+// ============================================================================
+setInterval(() => {
+    if (backgroundEventQueue.length > 0) {
+        sendBackgroundBatch();
+    }
+}, 10000); // Every 10 seconds

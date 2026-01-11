@@ -55,7 +55,7 @@ def initialize_csvs(folder_path):
     # Event Log
     with open(os.path.join(folder_path, "events.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp","type", "url", "selector","tagName","id","className","innerText","outerHTML","x_viewport","y_viewport","x_page","y_page","scrollX","scrollY","viewportW","viewportH","docWidth","docHeight"])
+        writer.writerow(["timestamp","type", "url", "selector","tagName","id","className","innerText","outerHTML", "element_x","element_y" , "element_width", "element_height", "element_top", "element_left", "x_viewport","y_viewport","x_page","y_page","scrollX","scrollY","viewportW","viewportH","docWidth","docHeight"])
 
 
 @app.route('/start-session', methods=['POST'])
@@ -135,22 +135,10 @@ def record_event():
         try:
             file_path = os.path.join(folder_path, "events.csv")
             
-            # Check if we need headers
-            write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
             
             with open(file_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 
-                # 1. WRITE HEADERS (Exact match to your object keys)
-                if write_header:
-                    writer.writerow([
-                        "timestamp", "type", "url", 
-                        "selector", "tagName", "id", "className", "innerText", "outerHTML",
-                        "x_viewport", "y_viewport", "x_page", "y_page",
-                        "scrollX", "scrollY", "viewportW", "viewportH",
-                        "docWidth", "docHeight"
-                    ])
-
                 # 2. WRITE ROW
                 writer.writerow([
                     data.get("timestamp"),
@@ -163,6 +151,13 @@ def record_event():
                     data.get("className"),
                     data.get("innerText").replace("\n", " ").replace("\r", " "),
                     data.get("outerHTML").replace("\n", " ").replace("\r", " "),
+                    # Element-Relative Coordinate
+                    data.get("element_x"),
+                    data.get("element_y"),
+                    data.get("element_width"),
+                    data.get("element_height"),
+                    data.get("element_top"),
+                    data.get("element_left"),
                     # Coordinates
                     data.get("x_viewport"),
                     data.get("y_viewport"),
@@ -213,15 +208,7 @@ def record_events_batch():
             
             # Write all events in the batch
             for event in events:
-                # Sanitize text fields
-                inner_text = event.get("innerText")
-                if inner_text:
-                    inner_text = inner_text.replace("\n", " ").replace("\r", " ")[:50]
-                
-                outer_html = event.get("outerHTML")
-                if outer_html:
-                    outer_html = outer_html.replace("\n", " ").replace("\r", " ")[:500]
-                
+
                 writer.writerow([
                     event.get("timestamp"),
                     event.get("type"),
@@ -231,8 +218,15 @@ def record_events_batch():
                     event.get("tagName"),
                     event.get("id"),
                     event.get("className"),
-                    inner_text,
-                    outer_html,
+                    event.get("innerText").replace("\n", " ").replace("\r", " "),
+                    event.get("outerHTML").replace("\n", " ").replace("\r", " "),
+                    # Element-Relative Coordinate
+                    event.get("element_x"),
+                    event.get("element_y"),
+                    event.get("element_width"),
+                    event.get("element_height"),
+                    event.get("element_top"),
+                    event.get("element_left"),
                     # Coordinates
                     event.get("x_viewport"),
                     event.get("y_viewport"),

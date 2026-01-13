@@ -58,8 +58,7 @@ function recordEvent(element, event, type) {
 
     // 2. HTML Safety
     let safeHTML = element.outerHTML;
-    if (safeHTML.length > 500) safeHTML = safeHTML.substring(0, 500) + "...";
-    if (element.tagName === 'BODY' || element.tagName === 'HTML') safeHTML = "BODY_CONTAINER";
+    if (element.tagName === 'BODY' || element.tagName === 'HTML') safeHTML = "<body>...</body>";
 
 
     const rect = element.getBoundingClientRect();
@@ -77,7 +76,7 @@ function recordEvent(element, event, type) {
         tagName: element.tagName,
         id: element.id || null,
         className: element.className || null,
-        innerText: element.innerText ? element.innerText.substring(0, 50) : null,
+        innerText: element.innerText ? element.innerText : "",
         outerHTML: safeHTML,
 
         // --- Element-Relative Coordinates (NEW) ---
@@ -219,6 +218,7 @@ window.addEventListener('beforeunload', () => {
     sendBatch(); // Send any remaining events
     clearTimeout(hoverTimeout);
     clearTimeout(batchTimeout);
+    currentHoveredElement = null;
 });
 
 // ============================================================================

@@ -1,628 +1,572 @@
 import pandas as pd
-import numpy as np
+import asyncio
+from playwright.async_api import async_playwright
+from pathlib import Path
 import json
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-from scipy.ndimage import gaussian_filter
-import cv2
-import base64
-from io import BytesIO
-from PIL import Image
-import warnings
-warnings.filterwarnings('ignore')
+import difflib
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
-class InteractiveHeatmapGenerator:
-    def __init__(self, csv_path):
-        """
-        Initialize heatmap generator with cursor data
-        
-        Args:
-            csv_path: Path to your CSV file
-        """
-        self.df = pd.read_csv(csv_path)
-        self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
-        self.df.sort_values('timestamp', inplace=True)
-        
-    def preprocess_url_data(self, target_url, session_threshold_minutes=30):
-        """
-        Process data for a specific URL with session segmentation
-        
-        Args:
-            target_url: URL to analyze
-            session_threshold_minutes: Minutes between events to consider new session
-        """
-        # Filter for target URL
-        url_data = self.df[self.df['url'] == target_url].copy()
-        
-        if url_data.empty:
-            raise ValueError(f"No data found for URL: {target_url}")
-        
-        # Create session IDs based on time gaps
-        url_data['time_diff'] = url_data['timestamp'].diff()
-        url_data['new_session'] = url_data['time_diff'] > pd.Timedelta(minutes=session_threshold_minutes)
-        url_data['session_id'] = url_data['new_session'].cumsum()
-        
-        # Calculate adjusted coordinates considering zoom, scroll, and viewport
-        url_data = self._calculate_absolute_coordinates(url_data)
-        
-        return url_data
+# ============================================================================
+# DATA STRUCTURES
+# ============================================================================
+
+@dataclass
+class ElementMatch:
+    """Represents a found element with match information"""
+    element: any  # Playwright element handle
+    bbox: Dict[str, float]
+    number: int
+    selector: str
+    match_method: str
+    confidence: float
+    original_data: Dict
+
+@dataclass
+class SearchConfig:
+    """Configuration for element search strategies"""
+    use_css_selector: bool = True
+    use_fuzzy_html: bool = True
+    use_fuzzy_text: bool = True
+    use_position: bool = True
+    use_similarity: bool = True
+
+    css_selector_timeout: int = 1000
+    min_html_similarity: float = 0.8
+    min_text_similarity: float = 0.7
+    position_tolerance: int = 50
+    max_elements_to_check: int = 100
+
+# ============================================================================
+# ELEMENT SEARCH ENGINE
+# ============================================================================
+
+class ElementFinder:
+    """Modular element finder with multiple fallback strategies"""
     
-    def _calculate_absolute_coordinates(self, df):
+    def __init__(self, page, config: SearchConfig = None):
+        self.page = page
+        self.config = config or SearchConfig()
+        
+    async def find_element(self, event_data: Dict, event_number: int) -> Optional[ElementMatch]:
         """
-        Calculate absolute screen coordinates considering all factors
+        Try multiple strategies to find an element based on recorded data
+        Returns the best match found
         """
-        # Handle zoom (assuming zoom level affects page coordinates)
-        # If you have zoom data, adjust coordinates here
-        # For now, we'll assume no zoom or it's accounted for in x_page/y_page
+        strategies = []
         
-        # Adjust for scroll
-        df['x_absolute'] = df['x_page'] + df['scrollX']
-        df['y_absolute'] = df['y_page'] + df['scrollY']
-        
-        # Normalize coordinates to a standard viewport if needed
-        # This helps compare different viewport sizes
-        if 'viewportW' in df.columns and 'viewportH' in df.columns:
-            # Convert to percentage of page
-            df['x_normalized'] = df['x_absolute'] / df['docWidth']
-            df['y_normalized'] = df['y_absolute'] / df['docHeight']
-        
-        return df
+        # Strategy 1: CSS Selector (Primary)
+        if self.config.use_css_selector and event_data.get('selector'):
+            match = await self._find_by_css_selector(event_data, event_number)
+            if match:
+                return match
+                
+        # Strategy 2: Fuzzy HTML Matching
+        if self.config.use_fuzzy_html and event_data.get('outerHTML'):
+            match = await self._find_by_fuzzy_html(event_data, event_number)
+            if match and match.confidence >= self.config.min_html_similarity:
+                return match
+                
+        # Strategy 3: Fuzzy Text Matching
+        if self.config.use_fuzzy_text and event_data.get('innerText'):
+            match = await self._find_by_fuzzy_text(event_data, event_number)
+            if match and match.confidence >= self.config.min_text_similarity:
+                return match
+                
+        # Strategy 4: Position-based Search
+        if self.config.use_position:
+            match = await self._find_by_position(event_data, event_number)
+            if match:
+                return match
+                
+        # Strategy 5: Similar Element Search
+        if self.config.use_similarity:
+            match = await self._find_similar_element(event_data, event_number)
+            if match:
+                return match
+                
+        return None
     
-    def generate_density_heatmap(self, url_data, output_type='interactive'):
-        """
-        Generate a density-based heatmap
+    async def _find_by_css_selector(self, event_data: Dict, event_number: int) -> Optional[ElementMatch]:
+        """Find element using CSS selector"""
+        try:
+            selector = event_data['selector']
+            element = await self.page.query_selector(selector)
+            
+            if element:
+                bbox = await element.bounding_box()
+                if bbox:
+                    return ElementMatch(
+                        element=element,
+                        bbox=bbox,
+                        number=event_number,
+                        selector=selector,
+                        match_method='css_selector',
+                        confidence=1.0,
+                        original_data=event_data
+                    )
+        except Exception as e:
+            print(f"   ⚠️  CSS selector failed: {str(e)[:50]}")
+        return None
+    
+    async def _find_by_fuzzy_html(self, event_data: Dict, event_number: int) -> Optional[ElementMatch]:
+        """Find element by comparing HTML similarity"""
+        try:
+            original_html = event_data['outerHTML']
+            if not original_html or len(original_html) < 10:
+                return None
+                
+            # Extract tag and key attributes from original HTML
+            tag_name = event_data.get('tagName', '').lower()
+            
+            # Get all elements of the same type
+            all_elements = await self.page.query_selector_all(tag_name)
+            all_elements = all_elements[:self.config.max_elements_to_check]
+            
+            best_match = None
+            best_score = 0
+            
+            for element in all_elements:
+                current_html = await element.evaluate('el => el.outerHTML')
+                
+                # Calculate similarity
+                similarity = self._calculate_html_similarity(original_html, current_html)
+                
+                if similarity > best_score:
+                    best_score = similarity
+                    bbox = await element.bounding_box()
+                    if bbox:
+                        best_match = ElementMatch(
+                            element=element,
+                            bbox=bbox,
+                            number=event_number,
+                            selector=f"fuzzy_html_{tag_name}",
+                            match_method='fuzzy_html',
+                            confidence=similarity,
+                            original_data=event_data
+                        )
+            
+            if best_match:
+                print(f"   🔍 Fuzzy HTML match: {best_score:.2%}")
+                return best_match
+                
+        except Exception as e:
+            print(f"   ⚠️  Fuzzy HTML failed: {str(e)[:50]}")
+        return None
+    
+    async def _find_by_fuzzy_text(self, event_data: Dict, event_number: int) -> Optional[ElementMatch]:
+        """Find element by comparing text content"""
+        try:
+            original_text = event_data.get('innerText', '').strip()
+            if not original_text or len(original_text) < 3:
+                return None
+            
+            # Get elements that could contain text
+            selectors = ['a', 'button', 'span', 'div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label']
+            
+            for selector in selectors:
+                elements = await self.page.query_selector_all(selector)
+                elements = elements[:self.config.max_elements_to_check]
+                
+                for element in elements:
+                    current_text = await element.text_content() or ''
+                    current_text = current_text.strip()
+                    
+                    if not current_text:
+                        continue
+                    
+                    similarity = difflib.SequenceMatcher(
+                        None, 
+                        original_text.lower(), 
+                        current_text.lower()
+                    ).ratio()
+                    
+                    if similarity >= self.config.min_text_similarity:
+                        bbox = await element.bounding_box()
+                        if bbox:
+                            return ElementMatch(
+                                element=element,
+                                bbox=bbox,
+                                number=event_number,
+                                selector=f"fuzzy_text_{selector}",
+                                match_method='fuzzy_text',
+                                confidence=similarity,
+                                original_data=event_data
+                            )
+                            
+        except Exception as e:
+            print(f"   ⚠️  Fuzzy text failed: {str(e)[:50]}")
+        return None
+    
+    async def _find_by_position(self, event_data: Dict, event_number: int) -> Optional[ElementMatch]:
+        """Find element by approximate position"""
+        try:
+            # Get recorded position
+            viewport_x = event_data.get('x_viewport')
+            viewport_y = event_data.get('y_viewport')
+            scroll_y = event_data.get('scrollY', 0)
+            
+            if viewport_x is None or viewport_y is None:
+                return None
+            
+            absolute_y = viewport_y + scroll_y
+            
+            # Get all elements near this position
+            tolerance = self.config.position_tolerance
+            
+            # Use JavaScript to find element at coordinates
+            element_at_point = await self.page.evaluate('''(x, y) => {
+                return document.elementFromPoint(x, y);
+            }''', viewport_x, viewport_y)
+            
+            if element_at_point:
+                # Get the element handle
+                element = await self.page.evaluate_handle('(el) => el', element_at_point)
+                bbox = await element.bounding_box()
+                
+                if bbox:
+                    return ElementMatch(
+                        element=element,
+                        bbox=bbox,
+                        number=event_number,
+                        selector='position_based',
+                        match_method='position',
+                        confidence=0.5,
+                        original_data=event_data
+                    )
+                    
+        except Exception as e:
+            print(f"   ⚠️  Position search failed: {str(e)[:50]}")
+        return None
+    
+    async def _find_similar_element(self, event_data: Dict, event_number: int) -> Optional[ElementMatch]:
+        """Find element with similar characteristics"""
+        try:
+            tag_name = event_data.get('tagName', '').lower()
+            class_name = event_data.get('className', '')
+            element_id = event_data.get('id', '')
+            
+            # Build a flexible selector
+            selector_parts = []
+            if tag_name:
+                selector_parts.append(tag_name)
+            if element_id:
+                selector_parts.append(f'#{element_id}')
+            if class_name:
+                # Take just the first class for simplicity
+                first_class = class_name.split()[0] if class_name else ''
+                if first_class:
+                    selector_parts.append(f'.{first_class}')
+            
+            if selector_parts:
+                selector = ''.join(selector_parts)
+                elements = await self.page.query_selector_all(selector)
+                
+                if elements:
+                    # Take the first matching element
+                    element = elements[0]
+                    bbox = await element.bounding_box()
+                    
+                    if bbox:
+                        return ElementMatch(
+                            element=element,
+                            bbox=bbox,
+                            number=event_number,
+                            selector=selector,
+                            match_method='similar_element',
+                            confidence=0.3,
+                            original_data=event_data
+                        )
+                        
+        except Exception as e:
+            print(f"   ⚠️  Similar element search failed: {str(e)[:50]}")
+        return None
+    
+    def _calculate_html_similarity(self, html1: str, html2: str) -> float:
+        """Calculate similarity between two HTML strings"""
+        if not html1 or not html2:
+            return 0.0
         
-        Args:
-            url_data: Preprocessed DataFrame for the URL
-            output_type: 'interactive' (plotly) or 'static' (matplotlib)
-        """
-        # Extract coordinates
-        x_coords = url_data['x_absolute'].values
-        y_coords = url_data['y_absolute'].values
+        # Simple similarity based on common substrings
+        html1_lower = html1.lower()
+        html2_lower = html2.lower()
         
-        # Get page dimensions
-        page_width = int(url_data['docWidth'].iloc[0])
-        page_height = int(url_data['docHeight'].iloc[0])
+        # Check for exact tag match
+        import re
+        tag1 = re.match(r'^<(\w+)', html1_lower)
+        tag2 = re.match(r'^<(\w+)', html2_lower)
         
-        # Create density grid
-        grid_size = 10  # pixels per grid cell
-        grid_x = int(page_width / grid_size)
-        grid_y = int(page_height / grid_size)
+        if not tag1 or not tag2 or tag1.group(1) != tag2.group(1):
+            return 0.0
         
-        # Create density matrix
-        density = np.zeros((grid_y, grid_x))
+        # Calculate string similarity
+        return difflib.SequenceMatcher(None, html1_lower[:200], html2_lower[:200]).ratio()
+
+# ============================================================================
+# HIGHLIGHT MANAGER
+# ============================================================================
+
+class HighlightManager:
+    """Manages highlighting and labeling elements on the page"""
+    
+    def __init__(self, page):
+        self.page = page
+        self.highlighted_elements = []
         
-        for x, y in zip(x_coords, y_coords):
-            if 0 <= x < page_width and 0 <= y < page_height:
-                grid_col = min(int(x / grid_size), grid_x - 1)
-                grid_row = min(int(y / grid_size), grid_y - 1)
-                density[grid_row, grid_col] += 1
+    async def setup(self):
+        """Inject CSS for highlighting"""
+        await self.page.add_style_tag(content='''
+            .tracker-highlight {
+                outline: 3px solid red !important;
+                outline-offset: 2px !important;
+                box-shadow: 0 0 0 3px rgba(255,0,0,0.3) !important;
+            }
+            .tracker-label {
+                position: absolute !important;
+                background: red !important;
+                color: white !important;
+                font-weight: bold !important;
+                padding: 2px 6px !important;
+                border-radius: 10px !important;
+                font-size: 14px !important;
+                z-index: 9999 !important;
+                pointer-events: none !important;
+            }
+        ''')
+    
+    async def highlight_element(self, element_match: ElementMatch):
+        """Highlight a single element and add label"""
+        element = element_match.element
         
-        # Apply Gaussian filter for smoother heatmap
-        density = gaussian_filter(density, sigma=1.5)
+        # Add highlight
+        await element.evaluate('''(element) => {
+            element.classList.add('tracker-highlight');
+        }''')
         
-        if output_type == 'interactive':
-            return self._create_plotly_heatmap(density, grid_size, url_data)
+        # Add label
+        bbox = element_match.bbox
+        await self.page.evaluate('''({bbox, number, method}) => {
+            const label = document.createElement('div');
+            label.className = 'tracker-label';
+            label.textContent = `${number} (${method})`;
+            
+            label.style.left = (bbox.x + bbox.width + 5) + 'px';
+            label.style.top = (bbox.y - 5) + 'px';
+            
+            if (bbox.x + bbox.width + 100 > window.innerWidth) {
+                label.style.left = (bbox.x - 25) + 'px';
+            }
+            
+            document.body.appendChild(label);
+        }''', {'bbox': bbox, 'number': element_match.number, 'method': element_match.match_method})
+        
+        self.highlighted_elements.append(element_match)
+        
+    async def take_screenshot(self, output_path: str):
+        """Take screenshot of highlighted page"""
+        await self.page.screenshot(path=output_path, full_page=True)
+
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
+
+async def highlight_clicked_elements(csv_file: str, target_url: str, output_file: str = 'element_highlights.png'):
+    """
+    Main function to find and highlight clicked elements
+    """
+    
+    # 1. Read and filter the CSV
+    print(f"📁 Reading CSV: {csv_file}")
+    df = pd.read_csv(csv_file)
+    
+    # Filter by URL and click events only
+    df = df[(df['url'] == target_url) & (df['type'] == 'click')]
+    df = df.sort_values('timestamp')
+    
+    if len(df) == 0:
+        print(f"❌ No click events found for URL: {target_url}")
+        return
+    
+    print(f"✅ Found {len(df)} click events")
+    
+    # 2. Launch Chrome browser
+    print("🚀 Launching Chrome browser...")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            channel='chrome',
+            headless=False,
+            args=['--start-maximized']
+        )
+        
+        page = await browser.new_page()
+        
+        # 3. Wait for user to navigate manually
+        print("\n" + "="*60)
+        print("⚠️  MANUAL SETUP REQUIRED")
+        print("="*60)
+        print("1. The Chrome browser has opened")
+        print("2. Please manually navigate to:")
+        print(f"   {target_url}")
+        print("3. Login/setup your account if needed")
+        print("4. Make sure the page is fully loaded")
+        print("5. Then return here and press Enter to continue...")
+        print("="*60 + "\n")
+        
+        await page.goto('about:blank')
+        input("Press Enter after you've navigated to the correct page and logged in...")
+        
+        # 4. Verify we're on the correct page
+        current_url = page.url
+        if target_url not in current_url:
+            print(f"⚠️  Warning: You're on {current_url}")
+            print(f"   Expected URL containing: {target_url}")
+            confirm = input("Continue anyway? (y/n): ")
+            if confirm.lower() != 'y':
+                await browser.close()
+                return
+        
+        print(f"🌐 Current page: {current_url}")
+        
+        # 5. Initialize modules
+        config = SearchConfig(
+            use_css_selector=True,
+            use_fuzzy_html=True,
+            use_fuzzy_text=True,
+            use_position=True,
+            use_similarity=True
+        )
+        
+        finder = ElementFinder(page, config)
+        highlighter = HighlightManager(page)
+        await highlighter.setup()
+        
+        # 6. Process each click event
+        print("\n🔍 Finding and highlighting clicked elements...")
+        
+        found_elements = []
+        not_found = []
+        
+        for i, (_, event) in enumerate(df.iterrows(), 1):
+            print(f"\n[{i}] Searching for element...")
+            
+            # Convert event row to dictionary
+            event_data = event.to_dict()
+            
+            # Try to find the element
+            element_match = await finder.find_element(event_data, i)
+            
+            if element_match:
+                print(f"   ✓ Found via {element_match.match_method} (confidence: {element_match.confidence:.0%})")
+                
+                # Highlight the element
+                await highlighter.highlight_element(element_match)
+                found_elements.append(element_match)
+                
+                # Small delay to avoid overwhelming the page
+                await page.wait_for_timeout(100)
+            else:
+                print(f"   ❌ Could not find element")
+                not_found.append({
+                    'number': i,
+                    'selector': event_data.get('selector', ''),
+                    'tag': event_data.get('tagName', '')
+                })
+        
+        # 7. Take screenshot
+        print(f"\n📸 Taking screenshot...")
+        await highlighter.take_screenshot(output_file)
+        print(f"✅ Screenshot saved to: {output_file}")
+        
+        # 8. Create summary report
+        await _generate_summary_report(found_elements, not_found, df, output_file)
+        
+        # 9. Cleanup
+        keep_open = input("\nKeep browser open to inspect elements? (y/n): ")
+        if keep_open.lower() != 'y':
+            await browser.close()
         else:
-            return self._create_matplotlib_heatmap(density, grid_size, url_data)
+            print("Browser will remain open. Close it manually when done.")
+        
+        print("✨ Done!")
+
+async def _generate_summary_report(found_elements: List[ElementMatch], not_found: List, df, output_file: str):
+    """Generate and display summary report"""
+    print("\n" + "="*60)
+    print("📊 SUMMARY REPORT")
+    print("="*60)
+    print(f"Total clicks in CSV: {len(df)}")
+    print(f"Elements successfully found: {len(found_elements)}")
+    print(f"Elements not found: {len(not_found)}")
     
-    def _create_plotly_heatmap(self, density, grid_size, url_data):
-        """
-        Create interactive Plotly heatmap
-        """
-        # Create heatmap trace
-        heatmap = go.Heatmap(
-            z=density,
-            colorscale='Hot',
-            showscale=True,
-            hoverinfo='z',
-            opacity=0.7
-        )
+    # Method breakdown
+    if found_elements:
+        print("\n📈 Match Methods Used:")
+        methods = {}
+        for elem in found_elements:
+            methods[elem.match_method] = methods.get(elem.match_method, 0) + 1
         
-        # Get additional data for tooltips
-        page_width = int(url_data['docWidth'].iloc[0])
-        page_height = int(url_data['docHeight'].iloc[0])
-        
-        # Create figure
-        fig = go.Figure(data=heatmap)
-        
-        # Update layout
-        fig.update_layout(
-            title=f"Cursor Heatmap - {len(url_data)} interactions",
-            width=page_width,
-            height=page_height,
-            xaxis=dict(
-                range=[0, density.shape[1]],
-                showgrid=False,
-                zeroline=False,
-                visible=False
-            ),
-            yaxis=dict(
-                range=[0, density.shape[0]],
-                scaleanchor="x",
-                scaleratio=1,
-                showgrid=False,
-                zeroline=False,
-                visible=False
-            ),
-            hovermode='closest'
-        )
-        
-        return fig
+        for method, count in methods.items():
+            print(f"  {method}: {count} elements")
     
-    def generate_element_interaction_map(self, url_data):
-        """
-        Generate a visualization showing which elements were interacted with most
-        """
-        # Count interactions by element type and selector
-        element_interactions = url_data.groupby(['tagName', 'selector', 'className', 'id']).size().reset_index(name='count')
-        element_interactions = element_interactions.sort_values('count', ascending=False)
-        
-        # Create bar chart
-        fig = go.Figure()
-        
-        # Top 20 elements
-        top_elements = element_interactions.head(20)
-        
-        # Create labels
-        labels = []
-        for _, row in top_elements.iterrows():
-            label = f"{row['tagName']}"
-            if pd.notna(row['className']) and row['className']:
-                label += f".{row['className']}"
-            if pd.notna(row['id']) and row['id']:
-                label += f"#{row['id']}"
-            labels.append(label)
-        
-        fig.add_trace(go.Bar(
-            x=top_elements['count'],
-            y=labels,
-            orientation='h',
-            marker=dict(
-                color=top_elements['count'],
-                colorscale='Viridis',
-                showscale=True
-            )
-        ))
-        
-        fig.update_layout(
-            title="Most Interacted Elements",
-            xaxis_title="Number of Interactions",
-            height=600
-        )
-        
-        return fig
+    # Confidence statistics
+    if found_elements:
+        avg_confidence = sum(e.confidence for e in found_elements) / len(found_elements)
+        print(f"\n🎯 Average confidence: {avg_confidence:.1%}")
     
-    def create_timeline_heatmap(self, url_data, time_bin='1H'):
-        """
-        Create heatmap showing interaction patterns over time
-        """
-        # Resample by time
-        url_data.set_index('timestamp', inplace=True)
-        time_series = url_data.resample(time_bin).size()
-        
-        fig = go.Figure(data=go.Scatter(
-            x=time_series.index,
-            y=time_series.values,
-            mode='lines+markers',
-            fill='tozeroy',
-            line=dict(color='orange', width=2),
-            marker=dict(size=8)
-        ))
-        
-        fig.update_layout(
-            title="Interaction Timeline",
-            xaxis_title="Time",
-            yaxis_title="Interactions per hour",
-            hovermode='x'
-        )
-        
-        return fig
-    
-    def generate_html_report(self, target_url, output_path='heatmap_report.html'):
-        """
-        Generate comprehensive HTML report with multiple visualizations
-        """
-        # Process data
-        url_data = self.preprocess_url_data(target_url)
-        
-        # Generate all visualizations
-        density_fig = self.generate_density_heatmap(url_data, 'interactive')
-        element_fig = self.generate_element_interaction_map(url_data)
-        timeline_fig = self.create_timeline_heatmap(url_data)
-        
-        # Get statistics
-        stats = self._calculate_statistics(url_data)
-        
-        # Generate HTML
-        html_content = self._create_html_template(
-            target_url, 
-            density_fig, 
-            element_fig, 
-            timeline_fig, 
-            stats
-        )
-        
-        # Save HTML
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        print(f"Report saved to: {output_path}")
-        return output_path
-    
-    def _calculate_statistics(self, url_data):
-        """
-        Calculate various statistics about the interactions
-        """
-        stats = {
-            'total_interactions': len(url_data),
-            'unique_users': url_data['session_id'].nunique(),
-            'interaction_types': url_data['type'].value_counts().to_dict(),
-            'avg_session_duration': None,
-            'most_active_hour': url_data['timestamp'].dt.hour.mode()[0] if not url_data.empty else None,
-            'top_element': url_data['tagName'].mode()[0] if not url_data.empty else None,
-            'avg_x': url_data['x_absolute'].mean(),
-            'avg_y': url_data['y_absolute'].mean()
+    # Save detailed report
+    save_data = input("\nSave detailed report to JSON? (y/n): ")
+    if save_data.lower() == 'y':
+        report_data = {
+            'summary': {
+                'total_clicks': len(df),
+                'found': len(found_elements),
+                'not_found': len(not_found),
+                'success_rate': len(found_elements) / len(df) if len(df) > 0 else 0
+            },
+            'found_elements': [
+                {
+                    'number': e.number,
+                    'selector': e.selector,
+                    'match_method': e.match_method,
+                    'confidence': e.confidence,
+                    'position': {
+                        'x': e.bbox['x'],
+                        'y': e.bbox['y'],
+                        'width': e.bbox['width'],
+                        'height': e.bbox['height']
+                    }
+                }
+                for e in found_elements
+            ],
+            'not_found_elements': not_found
         }
         
-        # Calculate session durations
-        session_durations = []
-        for session_id in url_data['session_id'].unique():
-            session_data = url_data[url_data['session_id'] == session_id]
-            if len(session_data) > 1:
-                duration = (session_data['timestamp'].max() - session_data['timestamp'].min()).total_seconds()
-                session_durations.append(duration)
-        
-        if session_durations:
-            stats['avg_session_duration'] = np.mean(session_durations)
-        
-        return stats
-    
-    def _create_html_template(self, url, density_fig, element_fig, timeline_fig, stats):
-        """
-        Create HTML template for the report
-        """
-        # Convert Plotly figures to HTML
-        density_html = density_fig.to_html(full_html=False, include_plotlyjs='cdn')
-        element_html = element_fig.to_html(full_html=False, include_plotlyjs=False)
-        timeline_html = timeline_fig.to_html(full_html=False, include_plotlyjs=False)
-        
-        html_template = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Heatmap Analysis - {url}</title>
-            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    margin: 20px;
-                    background-color: #f5f5f5;
-                }}
-                .container {{
-                    max-width: 1400px;
-                    margin: 0 auto;
-                }}
-                .header {{
-                    background-color: #333;
-                    color: white;
-                    padding: 20px;
-                    border-radius: 8px;
-                    margin-bottom: 20px;
-                }}
-                .stats-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 15px;
-                    margin-bottom: 30px;
-                }}
-                .stat-card {{
-                    background-color: white;
-                    padding: 20px;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .stat-value {{
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #2196F3;
-                }}
-                .stat-label {{
-                    font-size: 14px;
-                    color: #666;
-                }}
-                .visualization {{
-                    background-color: white;
-                    padding: 20px;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                    margin-bottom: 30px;
-                }}
-                h2 {{
-                    color: #333;
-                    border-bottom: 2px solid #2196F3;
-                    padding-bottom: 10px;
-                }}
-                .url-display {{
-                    font-family: monospace;
-                    background-color: #f0f0f0;
-                    padding: 10px;
-                    border-radius: 4px;
-                    margin: 10px 0;
-                    overflow-x: auto;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>📊 Interactive Heatmap Analysis</h1>
-                    <p class="url-display">URL: {url}</p>
-                    <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                </div>
-                
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-value">{stats['total_interactions']}</div>
-                        <div class="stat-label">Total Interactions</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value">{stats['unique_users']}</div>
-                        <div class="stat-label">Unique Sessions</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value">{len(stats['interaction_types'])}</div>
-                        <div class="stat-label">Interaction Types</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value">{stats['most_active_hour'] or 'N/A'}:00</div>
-                        <div class="stat-label">Most Active Hour</div>
-                    </div>
-                </div>
-                
-                <div class="visualization">
-                    <h2>📈 Interaction Density Heatmap</h2>
-                    <p>Shows where users interacted most on the page</p>
-                    <div id="density-heatmap">{density_html}</div>
-                </div>
-                
-                <div class="visualization">
-                    <h2>🔍 Element Interaction Analysis</h2>
-                    <p>Most frequently interacted elements</p>
-                    <div id="element-analysis">{element_html}</div>
-                </div>
-                
-                <div class="visualization">
-                    <h2>⏰ Interaction Timeline</h2>
-                    <p>Interaction patterns over time</p>
-                    <div id="timeline">{timeline_html}</div>
-                </div>
-                
-                <div class="visualization">
-                    <h2>📋 Detailed Statistics</h2>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                        <div>
-                            <h3>Interaction Types</h3>
-                            <ul>
-                                {"".join([f"<li><strong>{k}:</strong> {v}</li>" for k, v in stats['interaction_types'].items()])}
-                            </ul>
-                        </div>
-                        <div>
-                            <h3>Coordinate Analysis</h3>
-                            <p><strong>Average X Position:</strong> {stats['avg_x']:.1f}px</p>
-                            <p><strong>Average Y Position:</strong> {stats['avg_y']:.1f}px</p>
-                            <p><strong>Most Common Element:</strong> {stats['top_element'] or 'N/A'}</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        
-        return html_template
+        json_file = output_file.replace('.png', '_report.json')
+        with open(json_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+        print(f"📁 Detailed report saved to: {json_file}")
 
-    def export_to_web_overlay(self, target_url, output_dir='heatmap_overlay'):
-        """
-        Export data for use with web-based heatmap overlay
-        """
-        import os
-        os.makedirs(output_dir, exist_ok=True)
-        
-        url_data = self.preprocess_url_data(target_url)
-        
-        # Prepare data for heatmap.js format
-        heatmap_data = {
-            "max": 1,
-            "data": []
-        }
-        
-        # Normalize coordinates for overlay
-        page_width = int(url_data['docWidth'].iloc[0])
-        page_height = int(url_data['docHeight'].iloc[0])
-        
-        for _, row in url_data.iterrows():
-            # Convert to percentage for responsive overlay
-            x_percent = (row['x_absolute'] / page_width) * 100
-            y_percent = (row['y_absolute'] / page_height) * 100
-            
-            heatmap_data["data"].append({
-                "x": x_percent,
-                "y": y_percent,
-                "value": 1,
-                "type": row['type'],
-                "element": row['tagName'],
-                "timestamp": row['timestamp'].isoformat()
-            })
-        
-        # Save data
-        data_path = os.path.join(output_dir, 'heatmap_data.json')
-        with open(data_path, 'w') as f:
-            json.dump(heatmap_data, f, indent=2)
-        
-        # Create overlay HTML
-        overlay_html = self._create_overlay_html(page_width, page_height)
-        overlay_path = os.path.join(output_dir, 'overlay.html')
-        with open(overlay_path, 'w') as f:
-            f.write(overlay_html)
-        
-        print(f"Heatmap overlay exported to: {output_dir}/")
-        print(f"Data: {data_path}")
-        print(f"Overlay: {overlay_path}")
-        
-        return data_path, overlay_path
-    
-    def _create_overlay_html(self, page_width, page_height):
-        """
-        Create HTML file for heatmap overlay
-        """
-        return f"""
-        <!DOCTYPE html>
-        <html>
-    <head>
-        <title>Heatmap Overlay</title>
-        <script src="https://cdn.jsdelivr.net/npm/heatmap.js@2.0.5/build/heatmap.min.js"></script>
-        <style>
-            body {{
-                margin: 0;
-                padding: 0;
-                position: relative;
-                width: {page_width}px;
-                height: {page_height}px;
-                background-color: #f0f0f0;
-            }}
-            #heatmapContainer {{
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                z-index: 1000;
-                pointer-events: none;
-            }}
-            #controls {{
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                background: white;
-                padding: 15px;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                z-index: 2000;
-            }}
-            .control-group {{
-                margin-bottom: 10px;
-            }}
-            label {{
-                display: block;
-                margin-bottom: 5px;
-                font-weight: bold;
-            }}
-            input[type="range"] {{
-                width: 200px;
-            }}
-        </style>
-    </head>
-    <body>
-        <!-- This would be your webpage content or screenshot -->
-        <div id="heatmapContainer"></div>
-        
-        <div id="controls">
-            <h3>Heatmap Controls</h3>
-            <div class="control-group">
-                <label for="opacity">Opacity: <span id="opacityValue">0.6</span></label>
-                <input type="range" id="opacity" min="0" max="1" step="0.1" value="0.6">
-            </div>
-            <div class="control-group">
-                <label for="radius">Radius: <span id="radiusValue">50</span></label>
-                <input type="range" id="radius" min="10" max="200" value="50">
-            </div>
-            <div class="control-group">
-                <label for="blur">Blur: <span id="blurValue">0.85</span></label>
-                <input type="range" id="blur" min="0" max="1" step="0.05" value="0.85">
-            </div>
-            <button id="toggleHeatmap">Toggle Heatmap</button>
-        </div>
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
 
-        <script>
-            // Initialize heatmap
-            var heatmapInstance = h337.create({{
-                container: document.getElementById('heatmapContainer'),
-                radius: 50,
-                maxOpacity: 0.6,
-                minOpacity: 0,
-                blur: 0.85
-            }});
-            
-            // Load data
-            fetch('heatmap_data.json')
-                .then(response => response.json())
-                .then(data => {{
-                    heatmapInstance.setData(data);
-                }});
-            
-            // Controls
-            document.getElementById('opacity').addEventListener('input', function(e) {{
-                document.getElementById('opacityValue').textContent = e.target.value;
-                heatmapInstance.configure({{
-                    maxOpacity: parseFloat(e.target.value)
-                }});
-            }});
-            
-            document.getElementById('radius').addEventListener('input', function(e) {{
-                document.getElementById('radiusValue').textContent = e.target.value;
-                heatmapInstance.configure({{
-                    radius: parseInt(e.target.value)
-                }});
-            }});
-            
-            document.getElementById('blur').addEventListener('input', function(e) {{
-                document.getElementById('blurValue').textContent = e.target.value;
-                heatmapInstance.configure({{
-                    blur: parseFloat(e.target.value)
-                }});
-            }});
-            
-            document.getElementById('toggleHeatmap').addEventListener('click', function() {{
-                var container = document.getElementById('heatmapContainer');
-                container.style.display = container.style.display === 'none' ? 'block' : 'none';
-            }});
-        </script>
-    </body>
-    </html>
-        """
-
-# Usage Example
 def main():
-    # Initialize generator
-    generator = InteractiveHeatmapGenerator('./data/Ala/events.csv')
+    # Set up paths
+    DATA_DIR = Path(__file__).resolve().parent / "data"
+    event_file = DATA_DIR / "Test" / "events.csv"
     
-    # Target URL to analyze
-    target_url = "https://letterboxd.com/"
+    # Check if file exists
+    if not event_file.exists():
+        print(f"❌ Error: File not found at {event_file}")
+        print("Please make sure the CSV file exists in the data/Test/ directory.")
+        return
     
-    try:
-        # Option 1: Generate complete HTML report
-        report_path = generator.generate_html_report(
-            target_url=target_url,
-            output_path='heatmap_analysis.html'
-        )
-        
-        # Option 2: Export for web overlay
-        # generator.export_to_web_overlay(target_url, 'overlay_data')
-        
-        # Option 3: Get just the density heatmap
-        # url_data = generator.preprocess_url_data(target_url)
-        # fig = generator.generate_density_heatmap(url_data, 'interactive')
-        # fig.show()
-        
-        print(f"Analysis complete! Report saved to: {report_path}")
-        
-    except ValueError as e:
-        print(f"Error: {e}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+    # Run the async function
+    asyncio.run(highlight_clicked_elements(
+        str(event_file), 
+        "https://letterboxd.com/", 
+        'element_highlights.png'
+    ))
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

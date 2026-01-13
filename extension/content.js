@@ -56,50 +56,44 @@ function recordEvent(element, event, type) {
     const viewportX = event.clientX;
     const viewportY = event.clientY;
 
-    // 2. HTML Safety
-    let safeHTML = element.outerHTML;
-    if (element.tagName === 'BODY' || element.tagName === 'HTML') safeHTML = "<body>...</body>";
-
-
     const rect = element.getBoundingClientRect();
     const elementRelativeX = viewportX - rect.left;
     const elementRelativeY = viewportY - rect.top;
 
     // 3. CONSTRUCT YOUR EXACT DATA POINT
     const dataPoint = {
-        type: type, // 'click' or 'hover'
-        url: window.location.href,
+
+        // --- general ---
         timestamp: Date.now(),
+        url: window.location.href,
+        type: type,
+        
 
         // --- Element Identity ---
+        id: element.id?.trim() || null,
+        tagName: element.tagName.toLowerCase(),
+        className: element.className?.trim().replace(/\s+/g, ' ') || null,
         selector: getCssSelector(element),
-        tagName: element.tagName,
-        id: element.id || null,
-        className: element.className || null,
-        innerText: element.innerText ? element.innerText : "",
-        outerHTML: safeHTML,
+        innerText: (element.innerText || '').trim().replace(/\s+/g, ' '),
+        outerHTML: getSafeHTML(element),
 
         // --- Element-Relative Coordinates (NEW) ---
-        element_x: Math.round(elementRelativeX),
-        element_y: Math.round(elementRelativeY),
-        element_width: Math.round(rect.width),
-        element_height: Math.round(rect.height),
-        element_top: Math.round(rect.top),
-        element_left: Math.round(rect.left),
+        element_relative_x: Math.round(elementRelativeX),
+        element_relative_y: Math.round(elementRelativeY),
+        element_width: Math.round(rect.width), // Visible width of the element Includes padding and borders and Excludes margins
+        element_height: Math.round(rect.height), // Visible height of the element Includes padding and borders and Excludes margins
+        element_top: Math.round(rect.top), // Distance from top of the viewport to the element’s top edge
+        element_left: Math.round(rect.left), //Distance from left of the viewport to the element’s top edge
 
         // --- Coordinates ---
-        x_viewport: Math.round(viewportX),
-        y_viewport: Math.round(viewportY),
-        x_page: Math.round(viewportX + scrollX),
-        y_page: Math.round(viewportY + scrollY),
-
-        // --- Context & Normalization ---
-        scrollX: Math.round(scrollX),
-        scrollY: Math.round(scrollY),
-        viewportW: window.innerWidth,
-        viewportH: window.innerHeight,
-        docHeight: document.documentElement.scrollHeight,
-        docWidth: document.documentElement.scrollWidth
+        x_viewport: Math.round(viewportX), //horizontal position of the mouse
+        y_viewport: Math.round(viewportY), //vertical position of the mouse
+        scrollX: Math.round(scrollX), //How far the page is scrolled horizontally.
+        scrollY: Math.round(scrollY), // How far the page is scrolled vertically.
+        viewportW: window.innerWidth, // Width of the visible browser area
+        viewportH: window.innerHeight, // Height of the visible browser area.
+        docHeight: document.documentElement.scrollHeight, // Total height of the page content. Includes content outside the visible area.
+        docWidth: document.documentElement.scrollWidth // Total width of the page content. Includes content outside the visible area.
     
     };
 
@@ -110,6 +104,8 @@ function recordEvent(element, event, type) {
     } else if (!batchTimeout) {
         batchTimeout = setTimeout(sendBatch, BATCH_TIMEOUT_MS);
     }
+
+    //commented code for sending the event instead of batch sending it
     //if (chrome.runtime && chrome.runtime.sendMessage) {chrome.runtime.sendMessage({ action: "LOG_EVENT", payload: dataPoint });}
 
     // 5. Visual Feedback
@@ -188,6 +184,22 @@ function getCssSelector(el) {
     return path.join(' > ');
 }
 
+
+// Cleaner:
+function getSafeHTML(element) {
+    if (element.tagName === 'BODY' || element.tagName === 'HTML') {
+        return `<${element.tagName.toLowerCase()}></${element.tagName.toLowerCase()}>`;
+    }
+    let html = element.outerHTML;
+    
+    html = html
+        .replace(/[\s]+/g, ' ')
+        .replace(/\s*>\s*/g, '>')
+        .replace(/\s*<\s*/g, '<')
+        .trim();
+    
+    return html;
+}
 
 // ============================================================================
 // BATCH SENDING FUNCTION

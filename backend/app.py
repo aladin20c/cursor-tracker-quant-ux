@@ -55,7 +55,7 @@ def initialize_csvs(folder_path):
     # Event Log
     with open(os.path.join(folder_path, "events.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp","type", "url", "selector","tagName","id","className","innerText","outerHTML", "element_x","element_y" , "element_width", "element_height", "element_top", "element_left", "x_viewport","y_viewport","x_page","y_page","scrollX","scrollY","viewportW","viewportH","docWidth","docHeight"])
+        writer.writerow(["timestamp","url", "type", "id","tagName","className","selector","innerText","outerHTML", "element_relative_x","element_relative_y" , "element_width", "element_height", "element_top", "element_left", "x_viewport","y_viewport","scrollX","scrollY","viewportW","viewportH","docWidth","docHeight"])
 
 
 @app.route('/start-session', methods=['POST'])
@@ -142,15 +142,15 @@ def record_event():
                 # 2. WRITE ROW
                 writer.writerow([
                     data.get("timestamp"),
-                    data.get("type"),
                     data.get("url"),
+                    data.get("type"),
                     # Element Identity
-                    data.get("selector"),
-                    data.get("tagName"),
                     data.get("id"),
+                    data.get("tagName"),
                     data.get("className"),
-                    data.get("innerText").replace("\n", " ").replace("\r", " "),
-                    data.get("outerHTML").replace("\n", " ").replace("\r", " "),
+                    data.get("selector"),
+                    data.get("innerText"),
+                    data.get("outerHTML"),
                     # Element-Relative Coordinate
                     data.get("element_x"),
                     data.get("element_y"),
@@ -161,9 +161,6 @@ def record_event():
                     # Coordinates
                     data.get("x_viewport"),
                     data.get("y_viewport"),
-                    data.get("x_page"),
-                    data.get("y_page"),
-                    # Context
                     data.get("scrollX"),
                     data.get("scrollY"),
                     data.get("viewportW"),
@@ -211,18 +208,18 @@ def record_events_batch():
 
                 writer.writerow([
                     event.get("timestamp"),
-                    event.get("type"),
                     event.get("url"),
+                    event.get("type"),
                     # Element Identity
-                    event.get("selector"),
-                    event.get("tagName"),
                     event.get("id"),
+                    event.get("tagName"),
                     event.get("className"),
+                    event.get("selector"),
                     event.get("innerText").replace("\n", " ").replace("\r", " "),
                     event.get("outerHTML").replace("\n", " ").replace("\r", " "),
                     # Element-Relative Coordinate
-                    event.get("element_x"),
-                    event.get("element_y"),
+                    event.get("element_relative_x"),
+                    event.get("element_relative_y"),
                     event.get("element_width"),
                     event.get("element_height"),
                     event.get("element_top"),
@@ -230,9 +227,6 @@ def record_events_batch():
                     # Coordinates
                     event.get("x_viewport"),
                     event.get("y_viewport"),
-                    event.get("x_page"),
-                    event.get("y_page"),
-                    # Context
                     event.get("scrollX"),
                     event.get("scrollY"),
                     event.get("viewportW"),
